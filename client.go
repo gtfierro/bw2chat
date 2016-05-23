@@ -95,6 +95,11 @@ func (cc *ChatClient) runCommand(cmd Command) {
 		}
 	case ERRORCommand:
 		cc.display(printRed(fmt.Sprintf("ERROR: unrecognized command: %+v", cmd)))
+	case HelpCommand:
+		cc.display(printYellow("\\join <roomname> -- join the room if you have permission"))
+		cc.display(printYellow("\\leave -- Leaves the room, but also causes echoing characters to stop BUGGY DO NOT USE"))
+		cc.display(printYellow("\\listjoined -- Lists the rooms you have joined"))
+		cc.display(printYellow("\\help-- Prints this help"))
 	default:
 		cc.currentRoomLock.Lock()
 		defer cc.currentRoomLock.Unlock()

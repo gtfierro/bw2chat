@@ -22,6 +22,7 @@ const (
 	LeaveCommand
 	SendCommand
 	ListJoinedRoomsCommand
+	HelpCommand
 	ERRORCommand
 )
 
@@ -35,6 +36,8 @@ func (ct CommandType) String() string {
 		return "Send"
 	case ListJoinedRoomsCommand:
 		return "ListJoinedRooms"
+	case HelpCommand:
+		return "Help"
 	case ERRORCommand:
 		return "Error"
 	default:
@@ -50,6 +53,8 @@ func commandFromString(s string) (c CommandType) {
 		c = LeaveCommand
 	case "listjoined":
 		c = ListJoinedRoomsCommand
+	case "help":
+		c = HelpCommand
 	default:
 		c = ERRORCommand
 	}
