@@ -109,19 +109,28 @@ func (ui *UserInterface) layout(g *gocui.Gui) error {
 		}()
 
 	}
+	// input prompt
+	if v, err := g.SetView("prompt", 30, maxY-10, 30+len(ui.header), maxY); err != nil {
+		if err != gocui.ErrUnknownView {
+			return err
+		}
+		v.Frame = false
+		fmt.Fprint(v, ui.header)
+	}
+
 	// input box
-	if v, err := g.SetView("input", 30, maxY-10, maxX, maxY); err != nil {
+	if v, err := g.SetView("input", 30+len(ui.header), maxY-10, maxX, maxY); err != nil {
 		if err != gocui.ErrUnknownView {
 			return err
 		}
 		g.Cursor = true
 		v.Wrap = true
 		v.Editable = true
+		v.Frame = false
 		if err := g.SetCurrentView("input"); err != nil {
 			return err
 		}
-		fmt.Fprint(v, ui.header)
-		v.SetCursor(len(ui.header), 0)
+		//v.SetCursor(len(ui.header), 0)
 	}
 
 	return nil
@@ -143,13 +152,16 @@ func (ui *UserInterface) quit(g *gocui.Gui, v *gocui.View) error {
 
 func (ui *UserInterface) parse(g *gocui.Gui, v *gocui.View) error {
 	input := v.ViewBuffer()
-	cmd := Parse(input[len(ui.header) : len(input)-1])
+	if len(input) == 0 {
+		v.Clear()
+		v.SetCursor(0, 0)
+		return nil
+	}
+	cmd := Parse(input[:len(input)-1])
 
 	// clear input
 	v.Clear()
 	v.SetCursor(0, 0)
-	fmt.Fprint(v, ui.header)
-	v.SetCursor(len(ui.header), 0)
 
 	go ui.client.runCommand(cmd)
 

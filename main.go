@@ -49,7 +49,7 @@ func NewChatDaemon(entityfile, namespace string) *ChatDaemon {
 }
 
 func (cd *ChatDaemon) buildURI(suffix string) string {
-	return cd.Namespace + suffix
+	return cd.Namespace + "room/" + suffix
 }
 
 func (cd *ChatDaemon) Start() {
