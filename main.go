@@ -99,9 +99,10 @@ func main() {
 
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
-			Name:  "entity,e",
-			Value: "chatroomtest.ent",
-			Usage: "The entity to use when interacting w/ bw2chat",
+			Name:   "entity,e",
+			Value:  "chatroomtest.ent",
+			Usage:  "The entity to use when interacting w/ bw2chat",
+			EnvVar: "BW2_DEFAULT_ENTITY",
 		},
 		cli.StringFlag{
 			Name:  "namespace,n",
