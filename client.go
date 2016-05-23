@@ -74,7 +74,6 @@ func (cc *ChatClient) runCommand(cmd Command) {
 			cc.display(printRed("Error joining", err))
 		}
 	case LeaveCommand:
-		cc.display(printYellow("Running leave"))
 		if err := cc.LeaveRoom(); err != nil {
 			cc.display(printRed("Error leaving", err))
 		}
@@ -177,15 +176,19 @@ func (cc *ChatClient) JoinRoom(roomname string) error {
 func (cc *ChatClient) LeaveRoom() error {
 	leaveRoom := LeaveRoom{Alias: cc.Alias}
 	if cc.CurrentRoom != nil && cc.CurrentRoom.Buffer != nil {
+		cc.stopTailing <- true
+		cc.CurrentRoom.closed = true
 		close(cc.CurrentRoom.Buffer)
-	}
-	err := cc.C.Publish(&bw.PublishParams{
-		URI:            cc.buildRoomURI(cc.CurrentRoom),
-		PayloadObjects: []bw.PayloadObject{leaveRoom.ToBW()},
-	})
-	if err != nil {
-		cc.display(printRed(err.Error()))
-		return err
+		err := cc.C.Publish(&bw.PublishParams{
+			URI:            cc.buildRoomURI(cc.CurrentRoom),
+			PayloadObjects: []bw.PayloadObject{leaveRoom.ToBW()},
+		})
+		if err != nil {
+			cc.display(printRed(err.Error()))
+			return err
+		}
+	} else {
+		cc.display(printYellow("Cannot leave when you are not in a room"))
 	}
 	return nil
 }

@@ -16,6 +16,7 @@ type ChatRoom struct {
 	subscription       chan *bw.SimpleMessage
 	Namespace          string
 	state              chan roomState
+	closed             bool
 }
 
 func NewChatRoom(roomname string, client *ChatClient, bufsize int) (*ChatRoom, error) {
@@ -53,6 +54,9 @@ func NewChatRoom(roomname string, client *ChatClient, bufsize int) (*ChatRoom, e
 }
 
 func (room *ChatRoom) newMessage(msg ChatMessage) {
+	if room.closed {
+		return
+	}
 	select {
 	case room.Buffer <- msg:
 		atomic.AddInt32(&room.UnreadMessageCount, 1)

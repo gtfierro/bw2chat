@@ -86,9 +86,8 @@ func startDaemon(c *cli.Context) {
 
 func startClient(c *cli.Context) {
 	client := NewChatClient(c.GlobalString("entity"), c.GlobalString("namespace"), c.String("alias"))
-	//client.CreateAndJoin(c.String("room"))
 	StartUserInterface(client)
-	//client.repl()
+	//TODO: exit cleanly here
 	x := make(chan bool)
 	<-x
 }

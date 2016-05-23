@@ -165,6 +165,17 @@ func (ui *UserInterface) parse(g *gocui.Gui, v *gocui.View) error {
 			fmt.Fprintln(v, "URI: ", ui.client.Namespace+cmd.Args[0])
 			return nil
 		})
+	case LeaveCommand:
+		g.Execute(func(g *gocui.Gui) error {
+			v, err := g.View("chatroomname")
+			if err != nil {
+				log.Fatal(errors.Wrap(err, "Could not update input screen"))
+			}
+			v.Clear()
+			fmt.Fprintln(v, "Chatroom: None")
+			fmt.Fprintln(v, "URI: None")
+			return nil
+		})
 	}
 	return nil
 }
