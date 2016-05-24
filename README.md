@@ -1,4 +1,4 @@
-BW2 Chat
+Ordo
 ========
 
 You need an entity w/ permission to publish and subscribe on `gabe.ns/chatrooms/room/+`
@@ -35,3 +35,7 @@ Once you are logged in, you get some commands:
 
 And that's all I've implemented and tested. You can switch between rooms using `\join` and it will keep a log of messages in other rooms.
 
+
+---
+
+Novus Ordo Seclorum -- Randy Waterhouse
