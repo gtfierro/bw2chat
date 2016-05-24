@@ -4,8 +4,8 @@ import (
 	"bufio"
 	"fmt"
 	"github.com/fatih/color"
-	_ "github.com/pkg/errors"
-	bw "gopkg.in/immesys/bw2bind.v3"
+	"github.com/gtfierro/ordo/core"
+	"github.com/pkg/errors"
 	"os"
 	"strings"
 	"sync"
@@ -15,201 +15,142 @@ var printRed = color.New(color.FgRed).SprintFunc()
 var printYellow = color.New(color.FgYellow).SprintFunc()
 var printGreen = color.New(color.FgGreen).SprintFunc()
 
-type ChatClient struct {
-	C          *bw.BW2Client
-	vk         string
-	Namespace  string
-	Alias      string
-	Input      *bufio.Reader
-	Screen     chan ChatMessage
-	roomStates chan roomState
+type OrdoClient struct {
+	ordo  *core.OrdoCore
+	Alias string
 
-	currentRoomLock sync.RWMutex
-	CurrentRoom     *ChatRoom
+	Input      *bufio.Reader
+	Screen     chan core.Message
+	roomStates chan core.RoomState
 
 	roomLock    sync.RWMutex
-	JoinedRooms map[string]*ChatRoom
+	currentRoom *core.Room
 
 	stopTailing chan bool
 }
 
-func NewChatClient(entityfile, namespace, alias string) *ChatClient {
-	cc := &ChatClient{
-		C:           bw.ConnectOrExit(""),
-		Namespace:   namespace,
+func NewOrdoClient(entityfile, alias string) *OrdoClient {
+	oc := &OrdoClient{
+		ordo:        core.NewOrdoCore(entityfile, alias),
 		Alias:       alias,
 		Input:       bufio.NewReader(os.Stdin),
-		Screen:      make(chan ChatMessage, 10),
-		JoinedRooms: make(map[string]*ChatRoom),
-		roomStates:  make(chan roomState, 100),
+		Screen:      make(chan core.Message, 100),
+		roomStates:  make(chan core.RoomState, 100),
 		stopTailing: make(chan bool),
 	}
 
-	cc.vk = cc.C.SetEntityFileOrExit(entityfile)
-	cc.C.OverrideAutoChainTo(true) //TODO: what does this do again?
+	// display ordo messages on screen
+	go func() {
+		for msg := range oc.ordo.Log {
+			oc.display(msg)
+		}
+	}()
 
-	return cc
+	return oc
 }
 
-func (cc *ChatClient) buildURI(suffix string) string {
-	return cc.Namespace + suffix
-}
-
-func (cc *ChatClient) buildRoomURI(room *ChatRoom) string {
-	return cc.Namespace + "room/" + room.Name
-}
-
-func (cc *ChatClient) display(s string) {
-	cc.Screen <- ChatMessage{
-		Room:    "!!System!!",
-		From:    "!!System!!",
+func (oc *OrdoClient) display(s string) {
+	oc.Screen <- core.Message{
+		From:    "<<System>>",
 		Message: s,
 	}
 }
 
-func (cc *ChatClient) runCommand(cmd Command) {
+func (oc *OrdoClient) tailRoomState(state core.RoomState) {
+	oc.roomStates <- state
+}
+
+func (oc *OrdoClient) runCommand(cmd Command) {
 	switch cmd.Type {
 	case JoinCommand:
-		if err := cc.JoinRoom(cmd.Args[0]); err != nil {
-			cc.display(printRed("Error joining", err))
+		if err := oc.JoinRoom(cmd.Args); err != nil {
+			oc.display(printRed("Error joining", err))
+		} else {
+			oc.display(printGreen("Joined ", cmd.Args[0]))
 		}
 	case LeaveCommand:
-		if err := cc.LeaveRoom(); err != nil {
-			cc.display(printRed("Error leaving", err))
+		if err := oc.LeaveRoom(cmd.Args); err != nil {
+			oc.display(printRed("Error leaving", err))
 		}
 	case ListJoinedRoomsCommand:
-		cc.roomLock.RLock()
-		rooms := []string{}
-		for room, _ := range cc.JoinedRooms {
-			rooms = append(rooms, room)
-		}
-		cc.roomLock.RUnlock()
+		rooms := oc.ordo.GetRooms()
 		if len(rooms) > 0 {
 			tmp := "Joined Rooms:\n"
-			tmp += strings.Join(rooms, "\n")
+			for _, room := range rooms {
+				tmp += fmt.Sprintf("%s\n", room.URI)
+			}
 			tmp += "\n---\n"
-			cc.display(printYellow(tmp))
+			oc.display(printYellow(tmp))
 		} else {
-			cc.display(printYellow("No rooms joined"))
+			oc.display(printYellow("No rooms joined"))
 		}
-	case ERRORCommand:
-		cc.display(printRed(fmt.Sprintf("ERROR: unrecognized command: %+v", cmd)))
+	//case ERRORCommand:
+	//	cc.display(printRed(fmt.Sprintf("ERROR: unrecognized command: %+v", cmd)))
 	case HelpCommand:
-		cc.display(printYellow("\\join <roomname> -- join the room if you have permission"))
-		cc.display(printYellow("\\leave -- Leaves the room, but also causes echoing characters to stop BUGGY DO NOT USE"))
-		cc.display(printYellow("\\listjoined -- Lists the rooms you have joined"))
-		cc.display(printYellow("\\help-- Prints this help"))
+		oc.display(printYellow("\\join <uri> -- join the room if you have permission"))
+		oc.display(printYellow("\\leave -- Leaves the room, but also causes echoing characters to stop BUGGY DO NOT USE"))
+		oc.display(printYellow("\\listjoined -- Lists the rooms you have joined"))
+		oc.display(printYellow("\\help-- Prints this help"))
 	default:
-		cc.currentRoomLock.Lock()
-		defer cc.currentRoomLock.Unlock()
-		if cc.CurrentRoom == nil {
-			cc.display(printYellow("Must join room first: \\join <roomname>"))
-			return
-		}
-		message := &ChatMessage{
-			Room:    cc.CurrentRoom.Name,
-			From:    cc.Alias,
-			Message: strings.Join(cmd.Args, " "),
-		}
-		cc.SendMessage(message)
+		oc.SendMessage(strings.Join(cmd.Args, " "))
 	}
 }
 
-// joins the chat room. returns error if the room doesn't exist
-func (cc *ChatClient) JoinRoom(roomname string) error {
+func (oc *OrdoClient) JoinRoom(args []string) error {
 	var (
-		err     error
-		room    *ChatRoom
-		found   bool
-		newRoom = false
+		roomURI string // args 0
 	)
-	cc.roomLock.Lock()
 
-	cc.currentRoomLock.Lock()
-	defer cc.currentRoomLock.Unlock()
+	if len(args) < 1 {
+		return errors.New("Need 1 argument to JoinRoom")
+	}
+	roomURI = args[0]
 
-	if room, found = cc.JoinedRooms[roomname]; !found {
-		room, err = NewChatRoom(roomname, cc, ChatRoomBufSize)
-		if err != nil {
-			cc.roomLock.Unlock()
-			return err
-		}
-		cc.display(printGreen(fmt.Sprintf("Joined room %s", roomname)))
-		cc.JoinedRooms[roomname] = room
-		go func() {
-			for state := range room.state {
-				cc.roomStates <- state
-			}
-		}()
-		newRoom = true
-	} else if cc.CurrentRoom == room {
-		cc.display(printGreen(fmt.Sprintf("Already joined room %s", roomname)))
-	} else {
-		cc.display(printGreen(fmt.Sprintf("Joining room %s", roomname)))
-		newRoom = true
+	oc.roomLock.Lock()
+	defer oc.roomLock.Unlock()
+
+	if oc.currentRoom != nil && oc.currentRoom.URI == roomURI {
+		oc.display(printYellow("Already in room ", roomURI))
+		return nil
 	}
 
-	if newRoom {
-		if cc.CurrentRoom != nil {
-			cc.stopTailing <- true
-		}
-		cc.CurrentRoom = room
-		go func() {
-			for {
-				select {
-				case <-cc.stopTailing:
-					cc.display(printYellow("Unfocusing ", roomname))
-					return
-				case msg := <-room.Buffer:
-					cc.Screen <- msg
-					room.readMessage()
-				}
-			}
-		}()
+	room, err := oc.ordo.JoinRoom(roomURI)
+	if err != nil {
+		return errors.Wrap(err, fmt.Sprintf("Could not join room %s", roomURI))
 	}
-
-	cc.roomLock.Unlock()
-
+	if oc.currentRoom != nil {
+		oc.currentRoom.StopTail()
+	}
+	room.StartTail(oc.Screen)
+	room.SetStateUpdateCallback(oc.tailRoomState)
+	oc.currentRoom = room
 	return nil
 }
 
-func (cc *ChatClient) LeaveRoom() error {
-	leaveRoom := LeaveRoom{Alias: cc.Alias}
-	if cc.CurrentRoom != nil && cc.CurrentRoom.Buffer != nil {
-		cc.stopTailing <- true
-		cc.CurrentRoom.closed = true
-		close(cc.CurrentRoom.Buffer)
-		err := cc.C.Publish(&bw.PublishParams{
-			URI:            cc.buildRoomURI(cc.CurrentRoom),
-			PayloadObjects: []bw.PayloadObject{leaveRoom.ToBW()},
-		})
-		if err != nil {
-			cc.display(printRed(err.Error()))
-			return err
-		}
-	} else {
-		cc.display(printYellow("Cannot leave when you are not in a room"))
+func (oc *OrdoClient) LeaveRoom(args []string) error {
+	oc.roomLock.Lock()
+	defer oc.roomLock.Unlock()
+	if oc.currentRoom == nil {
+		oc.display(printYellow("Not in a room to leave"))
+		return nil
 	}
-	return nil
-}
-
-// create the chat room if it doesn't exist and join it
-func (cc *ChatClient) CreateAndJoin(roomname string) error {
-	roomToCreate := CreateRoom{Name: roomname}
-	err := cc.C.Publish(&bw.PublishParams{
-		URI:            cc.buildURI(CreateRoomTopic),
-		PayloadObjects: []bw.PayloadObject{roomToCreate.ToBW()},
-	})
-	cc.JoinRoom(roomname)
+	var reason string
+	if len(args) == 0 {
+		reason = "<No reason given>"
+	} else {
+		reason = args[0]
+	}
+	err := oc.currentRoom.Leave(reason)
+	oc.currentRoom = nil
 	return err
 }
 
-func (cc *ChatClient) SendMessage(msg *ChatMessage) {
-	err := cc.C.Publish(&bw.PublishParams{
-		URI:            cc.buildRoomURI(cc.CurrentRoom),
-		PayloadObjects: []bw.PayloadObject{msg.ToBW()},
-	})
-	if err != nil {
-		cc.display(printRed(err.Error()))
+func (oc *OrdoClient) SendMessage(msg string) {
+	oc.roomLock.Lock()
+	defer oc.roomLock.Unlock()
+	if oc.currentRoom == nil {
+		oc.display(printYellow("Must join room first: \\join <roomuri>"))
+		return
 	}
+	oc.currentRoom.Speak(msg)
 }

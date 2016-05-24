@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"github.com/pkg/errors"
 	bw "gopkg.in/immesys/bw2bind.v5"
 	"strings"
@@ -10,7 +11,7 @@ import (
 // represents an Ordo chat room
 type Room struct {
 	// buffer of received but not displayed messages
-	Buffer chan ChatMessage
+	buffer chan Message
 	// URI of the room
 	URI string
 	// name of room derived from URI
@@ -21,9 +22,11 @@ type Room struct {
 	Alive bool
 	// internal signal to leave the room
 	quit chan bool
+	// internal signal to stop tailing
+	stoptail chan bool
 
 	// callback when the room's state updates
-	updateState func(state roomState)
+	updateState func(state RoomState)
 
 	// number of unread messages
 	unreadMsgCount int32
@@ -38,21 +41,27 @@ type Room struct {
 	subscription chan *bw.SimpleMessage
 }
 
-func NewRoom(roomURI string, ordo *OrdoCore, bufsize int) *Room {
+func NewRoom(roomURI string, ordo *OrdoCore, bufsize int) (*Room, error) {
 	room := &Room{
-		Buffer:      make(chan ChatMessage, bufsize),
+		buffer:      make(chan Message, bufsize),
 		URI:         roomURI,
-		Name:        roomURI[strings.LastIndex(roomURI, "/"):],
 		Alive:       false,
+		stoptail:    make(chan bool, 1),
 		quit:        make(chan bool),
-		updateState: func(state roomState) {},
+		updateState: func(state RoomState) {},
+		knownUsers:  map[string]string{ordo.vk: ordo.Alias},
 		ordo:        ordo,
 	}
-	return room
+	if idx := strings.LastIndex(roomURI, "/"); idx > 0 {
+		room.Name = roomURI[strings.LastIndex(roomURI, "/"):]
+	} else {
+		return nil, errors.New(fmt.Sprintf("Invalid URI %s", roomURI))
+	}
+	return room, nil
 }
 
 // function to be invoked when the room's state changes
-func (room *Room) SetStateUpdateCallback(fxn func(state roomState)) {
+func (room *Room) SetStateUpdateCallback(fxn func(state RoomState)) {
 	room.updateState = fxn
 }
 
@@ -72,7 +81,7 @@ func (room *Room) Leave(reason string) error {
 	}
 	room.quit <- true
 	close(room.subscription)
-	close(room.Buffer)
+	close(room.buffer)
 	return nil
 }
 
@@ -80,16 +89,37 @@ func (room *Room) Speak(msg string) error {
 	return room.ordo.performSpeak(room, msg)
 }
 
-func (room *Room) newMessage(msg ChatMessage) {
+func (room *Room) StartTail(dest chan Message) {
+	go func(dest chan Message) {
+		for {
+			select {
+			case <-room.stoptail:
+				return
+			case msg := <-room.buffer:
+				dest <- Message{From: msg.From, Room: room, Message: msg.Message}
+				atomic.AddInt32(&room.unreadMsgCount, -1)
+				room.getState()
+			}
+		}
+	}(dest)
+}
+
+func (room *Room) StopTail() {
+	room.stoptail <- true
+}
+
+func (room *Room) newMessage(msg Message) {
 	if !room.Alive {
 		return
 	}
 	select {
-	case room.Buffer <- msg:
+	case room.buffer <- msg:
 		atomic.AddInt32(&room.unreadMsgCount, 1)
+		room.getState()
 	default:
-		<-room.Buffer
-		room.Buffer <- msg
+		<-room.buffer
+		room.buffer <- msg
+		atomic.AddInt32(&room.unreadMsgCount, 1)
 	}
 }
 
@@ -100,58 +130,71 @@ func (room *Room) listen() {
 			joinMessage  JoinRoom
 			leaveMessage LeaveRoom
 		)
-		select {
-		case <-room.quit:
-			return
-		default:
-		}
-		for msg := range room.subscription {
-			for _, po := range msg.POs {
-				if po.IsType(ChatMessagePID, ChatMessagePID) {
-					err := po.(bw.MsgPackPayloadObject).ValueInto(&chatMessage)
-					if err != nil {
-						log.Error(errors.Wrap(err, "Could not parse chat msg"))
+		for {
+			select {
+			case <-room.quit:
+				return
+			case msg := <-room.subscription:
+				for _, po := range msg.POs {
+					if po.IsType(ChatMessagePID, ChatMessagePID) {
+						err := po.(bw.MsgPackPayloadObject).ValueInto(&chatMessage)
+						if err != nil {
+							log.Error(errors.Wrap(err, "Could not parse chat msg"))
+						}
+						if len(chatMessage.Message) == 0 {
+							continue
+						}
+						if _, found := room.knownUsers[msg.From]; !found {
+							room.knownUsers[msg.From] = chatMessage.Alias
+						}
+						room.newMessage(Message{
+							Message: chatMessage.Message,
+							FromVK:  msg.From,
+							From:    room.knownUsers[msg.From],
+							Room:    room,
+						})
+						room.getState()
+					} else if po.IsType(JoinRoomPID, JoinRoomPID) {
+						err := po.(bw.MsgPackPayloadObject).ValueInto(&joinMessage)
+						if err != nil {
+							log.Error(errors.Wrap(err, "Could not parse join msg"))
+						}
+						room.knownUsers[msg.From] = joinMessage.Alias
+						atomic.AddInt32(&room.knownUserCount, 1)
+						room.getState()
+					} else if po.IsType(LeaveRoomPID, LeaveRoomPID) {
+						err := po.(bw.MsgPackPayloadObject).ValueInto(&leaveMessage)
+						if err != nil {
+							log.Error(errors.Wrap(err, "Could not parse leave msg"))
+						}
+						delete(room.knownUsers, msg.From)
+						atomic.AddInt32(&room.knownUserCount, -1)
+						room.getState()
 					}
-					room.newMessage(chatMessage)
-					room.getState()
-				} else if po.IsType(JoinRoomPID, JoinRoomPID) {
-					err := po.(bw.MsgPackPayloadObject).ValueInto(&joinMessage)
-					if err != nil {
-						log.Error(errors.Wrap(err, "Could not parse join msg"))
-					}
-					room.knownUsers[msg.From] = joinMessage.Alias
-					atomic.AddInt32(&room.knownUserCount, 1)
-					room.getState()
-				} else if po.IsType(LeaveRoomPID, LeaveRoomPID) {
-					err := po.(bw.MsgPackPayloadObject).ValueInto(&leaveMessage)
-					if err != nil {
-						log.Error(errors.Wrap(err, "Could not parse leave msg"))
-					}
-					delete(room.knownUsers, msg.From)
-					atomic.AddInt32(&room.knownUserCount, -1)
-					room.getState()
 				}
 			}
 		}
 	}()
 }
 
-type roomState struct {
+type RoomState struct {
 	NumUnreadMessages int32
 	NumCurrentUsers   int32
 	Name              string
 	CurrentUsers      map[string]string
+	Room              *Room
 }
 
-func (state roomState) height() int {
+func (state RoomState) Height() int {
 	return 5 + len(state.CurrentUsers)
 }
 
 func (room *Room) getState() {
-	room.updateState(roomState{
+	room.updateState(RoomState{
 		NumUnreadMessages: atomic.LoadInt32(&room.unreadMsgCount),
 		NumCurrentUsers:   atomic.LoadInt32(&room.knownUserCount),
 		Name:              room.Name,
 		CurrentUsers:      room.knownUsers,
+		Room:              room,
 	})
 }

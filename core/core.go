@@ -46,32 +46,65 @@ type OrdoCore struct {
 
 func NewOrdoCore(entityfile, alias string) *OrdoCore {
 	ordo := &OrdoCore{
-		bw: bw.ConnectOrExit(""),
+		Log:   make(chan string, 100),
+		bw:    bw.ConnectOrExit(""),
+		rooms: make(map[string]*Room),
 	}
 	ordo.vk = ordo.bw.SetEntityFileOrExit(entityfile)
 	ordo.bw.OverrideAutoChainTo(true)
+	ordo.Alias = alias
+	ordo.log(ordo.Alias)
 
 	return ordo
 }
 
+func (ordo *OrdoCore) log(s string) {
+	select {
+	case ordo.Log <- s:
+	default:
+		<-ordo.Log
+		ordo.Log <- s
+	}
+}
+
+// fills in the map with our current rooms
+func (ordo *OrdoCore) GetRooms() []*Room {
+	ordo.roomsLock.Lock()
+	defer ordo.roomsLock.Unlock()
+	r := []*Room{}
+	for _, room := range ordo.rooms {
+		r = append(r, room)
+	}
+	return r
+}
+
 // Join the chatroom at the given URI using alias as your nickname. Needs consume privileges to
-// listen in the room, and publish privileges to send messages to the room
+// listen in the room, and publish privileges to send messages to the room.
+// Returns true if the room was created for the first time
 func (ordo *OrdoCore) JoinRoom(roomURI string) (*Room, error) {
 	var (
 		room  *Room
 		found bool
+		err   error
 	)
 	ordo.roomsLock.Lock()
 	if room, found = ordo.rooms[roomURI]; !found {
 		// need to join the room
-		room = NewRoom(roomURI, ordo, RoomBufSize)
+		if room, err = NewRoom(roomURI, ordo, RoomBufSize); err != nil {
+			ordo.log(fmt.Sprintf("Could not join room (%s)", err.Error()))
+			return nil, err
+		}
+		ordo.rooms[roomURI] = room
 	}
 
-	if err := ordo.performJoin(room); err != nil {
-		ordo.Log <- fmt.Sprintf("Could not join room %s at URI %s (%s)", room.Name, room.URI, err.Error())
-		return nil, err
+	if !room.Alive {
+		ordo.log(fmt.Sprintf("room %s not alive so joining", room.URI))
+		if err = ordo.performJoin(room); err != nil {
+			ordo.log(fmt.Sprintf("Could not join room %s at URI %s (%s)", room.Name, room.URI, err.Error()))
+			return nil, err
+		}
 	}
-	ordo.Log <- fmt.Sprintf("Joined room %s at URI %s", room.Name, room.URI)
+	ordo.log(fmt.Sprintf("Joined room %s at URI %s", room.Name, room.URI))
 
 	ordo.roomsLock.Unlock()
 
@@ -99,13 +132,13 @@ func (ordo *OrdoCore) performJoin(room *Room) error {
 }
 
 func (ordo *OrdoCore) performSpeak(room *Room, msg string) error {
-	message := &ChatMessage{msg}
+	message := &ChatMessage{Alias: ordo.Alias, Message: msg}
 	err := ordo.bw.Publish(&bw.PublishParams{
 		URI:            room.URI,
 		PayloadObjects: []bw.PayloadObject{message.ToBW()},
 	})
 	if err != nil {
-		ordo.Log <- fmt.Sprintf("Could not send to room %s at URI %s (%s)", room.Name, room.URI, err.Error())
+		ordo.log(fmt.Sprintf("Could not send to room %s at URI %s (%s)", room.Name, room.URI, err.Error()))
 		return err
 	}
 	return nil
@@ -118,7 +151,7 @@ func (ordo *OrdoCore) performLeave(room *Room, reason string) error {
 		PayloadObjects: []bw.PayloadObject{msg.ToBW()},
 	})
 	if err != nil {
-		ordo.Log <- fmt.Sprintf("Could not send Leave to room %s at URI %s (%s)", room.Name, room.URI, err.Error())
+		ordo.log(fmt.Sprintf("Could not send Leave to room %s at URI %s (%s)", room.Name, room.URI, err.Error()))
 		return err
 	}
 	return nil

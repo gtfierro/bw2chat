@@ -19,6 +19,7 @@ var (
 type ChatMessage struct {
 	// the message to send to the chatroom
 	Message string
+	Alias   string
 }
 
 func (msg ChatMessage) ToBW() bw.PayloadObject {
@@ -50,4 +51,11 @@ type LeaveRoom struct {
 func (msg LeaveRoom) ToBW() bw.PayloadObject {
 	po, _ := bw.CreateMsgPackPayloadObject(LeaveRoomPID, msg)
 	return po
+}
+
+type Message struct {
+	Message string
+	FromVK  string
+	From    string
+	Room    *Room
 }

@@ -8,12 +8,12 @@ import (
 
 type UserInterface struct {
 	g          *gocui.Gui
-	client     *ChatClient
+	client     *OrdoClient
 	header     string
 	roomOffset int
 }
 
-func StartUserInterface(client *ChatClient) *UserInterface {
+func StartUserInterface(client *OrdoClient) *UserInterface {
 	ui := &UserInterface{
 		g:          gocui.NewGui(),
 		client:     client,
@@ -38,11 +38,16 @@ func StartUserInterface(client *ChatClient) *UserInterface {
 
 	go func() {
 		for state := range ui.client.roomStates {
+			name := state.Name
+			height := state.Height()
+			users := state.CurrentUsers
+			numUnread := state.NumUnreadMessages
+			numUsers := state.NumCurrentUsers
 			ui.g.Execute(func(g *gocui.Gui) error {
-				v, err := g.View(state.FullName)
+				v, err := g.View(name)
 				if err == gocui.ErrUnknownView {
-					v, err = g.SetView(state.FullName, -1, ui.roomOffset, 30, ui.roomOffset+state.height())
-					ui.roomOffset += state.height()
+					v, err = g.SetView(name, -1, ui.roomOffset, 30, ui.roomOffset+height)
+					ui.roomOffset += height
 					if err != gocui.ErrUnknownView {
 						return err
 					}
@@ -51,13 +56,11 @@ func StartUserInterface(client *ChatClient) *UserInterface {
 				}
 
 				v.Clear()
-				fmt.Fprintln(v, fmt.Sprintf("Room: [%s]", state.FullName))
-				fmt.Fprintln(v, fmt.Sprintf("  Unread(%d)", state.NumUnreadMessages))
-				fmt.Fprintln(v, fmt.Sprintf("  Users(%d)", state.NumCurrentUsers))
-				for user, ok := range state.CurrentUsers {
-					if ok {
-						fmt.Fprintln(v, fmt.Sprintf("    %s", user))
-					}
+				fmt.Fprintln(v, fmt.Sprintf("Room: [%s]", name))
+				fmt.Fprintln(v, fmt.Sprintf("  Unread(%d)", numUnread))
+				fmt.Fprintln(v, fmt.Sprintf("  Users(%d)", numUsers))
+				for _, alias := range users {
+					fmt.Fprintln(v, fmt.Sprintf("    %s", alias))
 				}
 				return nil
 			})
@@ -173,8 +176,7 @@ func (ui *UserInterface) parse(g *gocui.Gui, v *gocui.View) error {
 				log.Fatal(errors.Wrap(err, "Could not update input screen"))
 			}
 			v.Clear()
-			fmt.Fprintln(v, "Chatroom: ", cmd.Args[0])
-			fmt.Fprintln(v, "URI: ", ui.client.Namespace+cmd.Args[0])
+			fmt.Fprintln(v, "URI: ", cmd.Args[0])
 			return nil
 		})
 	case LeaveCommand:
@@ -184,7 +186,6 @@ func (ui *UserInterface) parse(g *gocui.Gui, v *gocui.View) error {
 				log.Fatal(errors.Wrap(err, "Could not update input screen"))
 			}
 			v.Clear()
-			fmt.Fprintln(v, "Chatroom: None")
 			fmt.Fprintln(v, "URI: None")
 			return nil
 		})

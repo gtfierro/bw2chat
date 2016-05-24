@@ -5,8 +5,6 @@ package main
 import (
 	"github.com/codegangsta/cli"
 	"github.com/op/go-logging"
-	"github.com/pkg/errors"
-	bw "gopkg.in/immesys/bw2bind.v3"
 	"os"
 )
 
@@ -26,67 +24,17 @@ func init() {
 	logging.SetFormatter(logging.MustStringFormatter(format))
 }
 
-type ChatDaemon struct {
-	C         *bw.BW2Client
-	vk        string
-	Namespace string
-
-	stop chan bool
-
-	newRooms chan *bw.SimpleMessage
-}
-
-func NewChatDaemon(entityfile, namespace string) *ChatDaemon {
-	cd := &ChatDaemon{
-		C:         bw.ConnectOrExit(""),
-		Namespace: namespace,
-		stop:      make(chan bool),
-	}
-	cd.vk = cd.C.SetEntityFileOrExit(entityfile)
-	cd.C.OverrideAutoChainTo(true) //TODO: what does this do again?
-
-	return cd
-}
-
-func (cd *ChatDaemon) buildURI(suffix string) string {
-	return cd.Namespace + "room/" + suffix
-}
-
-func (cd *ChatDaemon) Start() {
-	var err error
-	// subscribe to the CreateRoom topic
-	if cd.newRooms, err = cd.C.Subscribe(&bw.SubscribeParams{URI: cd.buildURI(CreateRoomTopic)}); err != nil {
-		log.Fatal(errors.Wrap(err, "Could not subscribe to Create Rooms"))
-	}
-
-	go func() {
-		log.Notice("Listening for new rooms...")
-		var createRoomMsg CreateRoom
-		for msg := range cd.newRooms {
-			for _, po := range msg.POs {
-				if po.IsType(CreateRoomTopicPID, CreateRoomTopicPID) {
-					err := po.(bw.MsgPackPayloadObject).ValueInto(&createRoomMsg)
-					if err != nil {
-						log.Error(errors.Wrap(err, "Could not parse create room msg"))
-					} else {
-						log.Infof("Got create room msg: %+v", createRoomMsg)
-					}
-				}
-			}
-		}
-	}()
-
-	<-cd.stop
-}
-
 func startDaemon(c *cli.Context) {
-	daemon := NewChatDaemon(c.GlobalString("entity"), c.GlobalString("namespace"))
-	daemon.Start()
+	//daemon := NewChatDaemon(c.GlobalString("entity"), c.GlobalString("namespace"))
+	//daemon.Start()
 }
 
 func startClient(c *cli.Context) {
-	client := NewChatClient(c.GlobalString("entity"), c.GlobalString("namespace"), c.String("alias"))
+	client := NewOrdoClient(c.GlobalString("entity"), c.String("alias"))
 	StartUserInterface(client)
+	for _, room := range c.StringSlice("room") {
+		client.runCommand(Command{Type: JoinCommand, Args: []string{room}})
+	}
 	//TODO: exit cleanly here
 	x := make(chan bool)
 	<-x
@@ -123,19 +71,18 @@ func main() {
 			Action: startClient,
 			Flags: []cli.Flag{
 				cli.StringFlag{
-					Name:  "room",
-					Value: "default",
-					Usage: "Chat room to join",
-				},
-				cli.StringFlag{
 					Name:  "alias,nickname",
 					Value: "jf_sebastian",
 					Usage: "Nickname to use",
+				},
+				cli.StringSliceFlag{
+					Name:  "room, r",
+					Value: &cli.StringSlice{},
+					Usage: "List of rooms to join on startup. Use a new -r for each room",
 				},
 			},
 		},
 	}
 
-	//daemon := NewChatDaemon("chatroomtest.ent", "gabe.ns/chatrooms/")
 	app.Run(os.Args)
 }
